@@ -1,0 +1,20 @@
+# IdeaBrowser Daily Scraper Cron Configuration
+# Add this to your crontab with: crontab -e
+
+# Run daily at 2:00 AM (adjust timezone as needed)
+# IdeaBrowser typically updates with new ideas around midnight PST
+0 2 * * * /opt/ideabrowser-scraper/scripts/daily-scrape.sh
+
+# Alternative schedules:
+
+# Run at 3:30 AM every day
+# 30 3 * * * /opt/ideabrowser-scraper/scripts/daily-scrape.sh
+
+# Run at noon every day
+# 0 12 * * * /opt/ideabrowser-scraper/scripts/daily-scrape.sh
+
+# Run every 12 hours (2 AM and 2 PM)
+# 0 2,14 * * * /opt/ideabrowser-scraper/scripts/daily-scrape.sh
+
+# Test run every 5 minutes (for debugging only!)
+# */5 * * * * /opt/ideabrowser-scraper/scripts/daily-scrape.sh

@@ -1,0 +1,43 @@
+# Environment variables
+.env
+.env.local
+
+# Refresh token file
+refresh_token.txt
+
+# Output files
+*.json
+*.html
+page_*.html
+
+# Go build artifacts
+ideabrowser-scraper
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with go test -c
+*.test
+
+# Output directories
+/ideas/
+/debug/
+/output/
+/data/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+*.backup
