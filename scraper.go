@@ -3,12 +3,15 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/http/cookiejar"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -39,6 +42,9 @@ var (
 	verbose     bool
 	showHelp    bool
 	showVersion bool
+
+	// HTTP client with cookie jar for session management
+	httpClient *http.Client
 )
 
 type TokenResponse struct {
@@ -127,8 +133,7 @@ func loginWithEmail(email, password string) (*TokenResponse, int64, error) {
 	req.Header.Set("apikey", anonKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -148,12 +153,52 @@ func loginWithEmail(email, password string) (*TokenResponse, int64, error) {
 		return nil, 0, err
 	}
 
+	// Set the auth token as a cookie for the website
+	parsedURL, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, 0, err
+	}
+	
+	// Create the auth token cookie that the website expects
+	// The cookie name format is: sb-[project-id]-auth-token
+	// Extract project ID from the project URL
+	projectID := extractProjectID(projectURL)
+	cookieName := fmt.Sprintf("sb-%s-auth-token", projectID)
+	
+	// Encode the entire token response as base64 for the cookie value
+	tokenJSON, _ := json.Marshal(tokenResp)
+	cookieValue := "base64-" + base64.StdEncoding.EncodeToString(tokenJSON)
+	
+	cookie := &http.Cookie{
+		Name:     cookieName,
+		Value:    cookieValue,
+		Domain:   parsedURL.Hostname(),
+		Path:     "/",
+		HttpOnly: false,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	}
+	
+	httpClient.Jar.SetCookies(parsedURL, []*http.Cookie{cookie})
+	
 	expiresAt := time.Now().Unix() + int64(tokenResp.ExpiresIn)
 	if verbose {
 		fmt.Printf("Login successful (token expires at %s)\n", time.Unix(expiresAt, 0).Format(time.RFC3339))
+		fmt.Printf("Set auth cookie: %s\n", cookieName)
 	}
 
 	return &tokenResp, expiresAt, nil
+}
+
+// extractProjectID extracts the project ID from the Supabase project URL
+func extractProjectID(projectURL string) string {
+	// Extract from URL like https://chqfunawciniepaqtdbd.supabase.co
+	re := regexp.MustCompile(`https://([^.]+)\.supabase\.co`)
+	matches := re.FindStringSubmatch(projectURL)
+	if len(matches) > 1 {
+		return matches[1]
+	}
+	return ""
 }
 
 func refreshSupabaseToken(refreshToken string) (*TokenResponse, int64, error) {
@@ -170,8 +215,7 @@ func refreshSupabaseToken(refreshToken string) (*TokenResponse, int64, error) {
 	req.Header.Set("apikey", anonKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -192,9 +236,34 @@ func refreshSupabaseToken(refreshToken string) (*TokenResponse, int64, error) {
 		return nil, 0, err
 	}
 
+	// Update the auth cookie with the new token
+	parsedURL, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, 0, err
+	}
+	
+	projectID := extractProjectID(projectURL)
+	cookieName := fmt.Sprintf("sb-%s-auth-token", projectID)
+	
+	tokenJSON, _ := json.Marshal(tokenResp)
+	cookieValue := "base64-" + base64.StdEncoding.EncodeToString(tokenJSON)
+	
+	cookie := &http.Cookie{
+		Name:     cookieName,
+		Value:    cookieValue,
+		Domain:   parsedURL.Hostname(),
+		Path:     "/",
+		HttpOnly: false,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	}
+	
+	httpClient.Jar.SetCookies(parsedURL, []*http.Cookie{cookie})
+
 	expiresAt := time.Now().Unix() + int64(tokenResp.ExpiresIn)
 	if verbose {
 		fmt.Printf("Token refreshed successfully (expires at %s)\n", time.Unix(expiresAt, 0).Format(time.RFC3339))
+		fmt.Printf("Updated auth cookie: %s\n", cookieName)
 	}
 
 	return &tokenResp, expiresAt, nil
@@ -211,8 +280,7 @@ func getIdeaSlug() (string, error) {
 	req.Header.Set("Accept-Encoding", "gzip, deflate")
 	req.Header.Set("Accept-Language", "en-GB,en-US;q=0.9,en;q=0.8,ru;q=0.7,ar;q=0.6,pl;q=0.5,de;q=0.4,fr;q=0.3,zh-CN;q=0.2,zh;q=0.1,th;q=0.1,vi;q=0.1")
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -266,7 +334,7 @@ func getIdeaSlug() (string, error) {
 	return "", fmt.Errorf("could not find idea slug in HTML")
 }
 
-func scrapePage(url string, accessToken string) (string, error) {
+func scrapePage(url string) (string, error) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return "", err
@@ -278,13 +346,9 @@ func scrapePage(url string, accessToken string) (string, error) {
 	req.Header.Set("Cache-Control", "max-age=0")
 	req.Header.Set("Referer", "https://www.ideabrowser.com/idea-of-the-day")
 	
-	// Add authorization header for protected pages
-	if accessToken != "" {
-		req.Header.Set("Authorization", "Bearer "+accessToken)
-	}
+	// The cookies in httpClient.Jar will be automatically sent
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -388,6 +452,16 @@ func main() {
 		log.Fatalf("Configuration error: %v\n\nPlease ensure you have set up your .env file correctly.\nSee README.md for instructions.\n", err)
 	}
 
+	// Initialize HTTP client with cookie jar
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		log.Fatalf("Failed to create cookie jar: %v", err)
+	}
+	httpClient = &http.Client{
+		Jar: jar,
+		Timeout: 30 * time.Second,
+	}
+
 	// Create output directory if it doesn't exist
 	if outputDir != "." {
 		if err := os.MkdirAll(outputDir, 0755); err != nil {
@@ -405,7 +479,34 @@ func main() {
 	if data, err := os.ReadFile(refreshTokenFile); err == nil && len(data) > 0 {
 		currentRefreshToken = strings.TrimSpace(string(data))
 		if verbose {
-			log.Printf("Found saved refresh token")
+			log.Printf("Found saved refresh token, refreshing token...")
+		}
+		// Refresh the token to get a new access token and set cookies
+		tokenResp, expiresAt, err = refreshSupabaseToken(currentRefreshToken)
+		if err != nil {
+			// If refresh fails, try to login with email/password
+			log.Printf("Refresh token failed, trying email/password login: %v\n", err)
+			tokenResp, expiresAt, err = loginWithEmail(email, password)
+			if err != nil {
+				log.Fatalf("Authentication failed: %v\n", err)
+			}
+			currentRefreshToken = tokenResp.RefreshToken
+			// Save new refresh token
+			if err := os.WriteFile(refreshTokenFile, []byte(currentRefreshToken), 0644); err != nil {
+				if verbose {
+					fmt.Printf("Warning: failed to save refresh_token: %v\n", err)
+				}
+			}
+		} else {
+			// Update refresh token if it changed
+			if tokenResp.RefreshToken != "" && tokenResp.RefreshToken != currentRefreshToken {
+				currentRefreshToken = tokenResp.RefreshToken
+				if err := os.WriteFile(refreshTokenFile, []byte(currentRefreshToken), 0644); err != nil {
+					if verbose {
+						fmt.Printf("Warning: failed to save refresh_token: %v\n", err)
+					}
+				}
+			}
 		}
 	} else {
 		// Login with email/password to get initial token
@@ -459,26 +560,8 @@ func main() {
 			fmt.Printf("[%d/%d] Scraping: %s\n", i+1, len(pageURLs), pagePath)
 		}
 
-		// Page 1 is public; no token needed
-		if i == 0 {
-			content, err := scrapePage(fullURL, "")
-			if err != nil {
-				fmt.Printf("Failed to scrape page %d: %v\n", i+1, err)
-				continue
-			}
-			if verbose {
-				fmt.Printf("✓ Page %d scraped successfully (%d bytes)\n", i+1, len(content))
-			}
-			if saveHTML {
-				htmlFile := filepath.Join(outputDir, fmt.Sprintf("page_%d.html", i+1))
-				os.WriteFile(htmlFile, []byte(content), 0644)
-			}
-			scrapedPages[pagePath] = content
-			continue
-		}
-
-		// Protected pages require authentication
-		if tokenResp == nil || time.Now().Unix() >= expiresAt {
+		// For protected pages, check if we need to refresh token
+		if i > 0 && (tokenResp == nil || time.Now().Unix() >= expiresAt) {
 			if verbose {
 				log.Println("Refreshing authentication token...")
 			}
@@ -497,7 +580,7 @@ func main() {
 			}
 		}
 
-		content, err := scrapePage(fullURL, tokenResp.AccessToken)
+		content, err := scrapePage(fullURL)
 		if err != nil {
 			fmt.Printf("Failed to scrape page %d: %v\n", i+1, err)
 			continue
